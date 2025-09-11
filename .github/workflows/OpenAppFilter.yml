@@ -89,6 +89,7 @@ jobs:
         cp files/etc/rc.local imagebuilder/files/etc/
         
         cd imagebuilder
+        # 启用rootfs.tar.gz配置
         sed -i 's/# CONFIG_TARGET_ROOTFS_TARGZ is not set/CONFIG_TARGET_ROOTFS_TARGZ=y/' .config
         sed -i "s|CONFIG_TARGET_ROOTFS_SQUASHFS=.*|# CONFIG_TARGET_ROOTFS_SQUASHFS is not set|g" .config
         sed -i "s|CONFIG_TARGET_IMAGES_GZIP=.*|# CONFIG_TARGET_IMAGES_GZIP is not set|g" .config
@@ -101,22 +102,34 @@ jobs:
     - name: 🧱 构建iStoreOS-rootfs和插件
       working-directory: ./imagebuilder
       run: |
+        echo "开始编译，输出详细日志..."
         bash ./build24.sh
+        # 查看编译产物目录结构（调试用）
+        tree -L 3 bin/
+        tree -L 3 packages/
 
     - name: 📌 收集所有OpenAppFilter相关IPK文件
       id: collect_ipks
       run: |
         mkdir -p openappfilter_ipk
-        # 全局搜索所有含openappfilter关键字的ipk文件（不限制版本）
+        # 搜索所有OpenAppFilter相关IPK（包含oaf前缀和openappfilter关键字）
         find imagebuilder/ -type f -name "*openappfilter*.ipk" -exec cp {} openappfilter_ipk/ \; -print 2>/dev/null
-        # 补充收集oaf前缀的相关文件（如oaf主程序、语言包等）
         find imagebuilder/ -type f -name "oaf*.ipk" -exec cp {} openappfilter_ipk/ \; -print 2>/dev/null
         
-        # 输出收集结果（调试用）
-        echo "收集到的OpenAppFilter相关IPK文件："
+        # 检查收集结果
+        echo "收集到的IPK文件："
         ls -l openappfilter_ipk/
-        # 记录文件路径到输出变量
-        echo "ipk_path=openappfilter_ipk/*.ipk" >> $GITHUB_OUTPUT
+        if [ -z "$(ls -A openappfilter_ipk/)" ]; then
+          echo "警告：未找到OpenAppFilter相关IPK文件，可能编译失败"
+        fi
+        
+        # 输出文件路径
+        echo "ipk_files=openappfilter_ipk/*.ipk" >> $GITHUB_OUTPUT
+
+    - name: 📦 打印产出rootfs
+      run: |
+        echo "rootfs产物目录："
+        ls -lah imagebuilder/bin/targets/armsr/armv8/
 
     - name: 🚀 上传到 Release
       uses: softprops/action-gh-release@v2.2.1
@@ -131,13 +144,13 @@ jobs:
           
           🧩 集成： 基础组件、驱动、网络工具、容器支持及OpenAppFilter插件
           
-          🆕 附加： 所有OpenAppFilter相关IPK文件（自动收集，不限制版本）
+          🆕 附加： 所有OpenAppFilter相关IPK文件（自动收集）
           
           👤 用户名： root | 密码： 无
           
           🌐 IP： ${{ inputs.network_settings == 'static' && inputs.ipaddr || '单网口-动态获取；多网口-192.168.100.1' }}
         files: |
           imagebuilder/bin/targets/armsr/armv8/*generic-rootfs.tar.gz
-          ${{ steps.collect_ipks.outputs.ipk_path }}
+          ${{ steps.collect_ipks.outputs.ipk_files }}
       env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
