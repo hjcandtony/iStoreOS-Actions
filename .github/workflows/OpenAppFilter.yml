@@ -41,14 +41,20 @@ jobs:
 
     - name: ⚙️ 设置IP和网关
       run: |
+        echo "当前网络配置路径"
         CONFIG_PATH="./files/etc/uci-defaults/99-custom.sh"
+        echo $CONFIG_PATH
         if [ "${{ inputs.network_settings }}" = "static" ]; then
+           echo "删除网络设置-dhcp"
            sed -i '44,105d' "$CONFIG_PATH"
+           echo "替换默认配置"
            sed -i "/ipaddr/s/192.168.5.88/${{ inputs.ipaddr }}/g" "$CONFIG_PATH"
            sed -i "/gateway/s/192.168.5.1/${{ inputs.gateway }}/g" "$CONFIG_PATH"
         else
+           echo "删除网络设置-static"
            sed -i '36,42d' "$CONFIG_PATH"
         fi
+        echo "输出配置"
         cat $CONFIG_PATH
 
     - name: ⏬ 安装依赖
@@ -97,20 +103,20 @@ jobs:
       run: |
         bash ./build24.sh
 
-    - name: 📌 收集OAF相关IPK文件
+    - name: 📌 收集所有OpenAppFilter相关IPK文件
       id: collect_ipks
       run: |
-        mkdir -p oaf_ipk_packages
-        # 搜索所有相关的IPK文件（支持模糊匹配，忽略路径错误）
-        find imagebuilder/ -name "luci-i18n-oaf-zh-cn*.ipk" -exec cp {} oaf_ipk_packages/ \; -print 2>/dev/null
-        find imagebuilder/ -name "appfilter_6.1.1-r1_aarch64_generic*.ipk" -exec cp {} oaf_ipk_packages/ \; -print 2>/dev/null
-        find imagebuilder/ -name "oaf*.ipk" -exec cp {} oaf_ipk_packages/ \; -print 2>/dev/null
-        find imagebuilder/ -name "luci-app-appfilter_6.1.1-r1_all*.ipk" -exec cp {} oaf_ipk_packages/ \; -print 2>/dev/null
+        mkdir -p openappfilter_ipk
+        # 全局搜索所有含openappfilter关键字的ipk文件（不限制版本）
+        find imagebuilder/ -type f -name "*openappfilter*.ipk" -exec cp {} openappfilter_ipk/ \; -print 2>/dev/null
+        # 补充收集oaf前缀的相关文件（如oaf主程序、语言包等）
+        find imagebuilder/ -type f -name "oaf*.ipk" -exec cp {} openappfilter_ipk/ \; -print 2>/dev/null
         
         # 输出收集结果（调试用）
-        echo "收集到的OAF相关IPK文件："
-        ls -l oaf_ipk_packages/
-        echo "ipk_path=oaf_ipk_packages/*.ipk" >> $GITHUB_OUTPUT
+        echo "收集到的OpenAppFilter相关IPK文件："
+        ls -l openappfilter_ipk/
+        # 记录文件路径到输出变量
+        echo "ipk_path=openappfilter_ipk/*.ipk" >> $GITHUB_OUTPUT
 
     - name: 🚀 上传到 Release
       uses: softprops/action-gh-release@v2.2.1
@@ -118,11 +124,17 @@ jobs:
         tag_name: iStoreOS-24.10-RELEASE-${{ inputs.network_settings }}
         body: |
           📌 版本： iStoreOS-24.10.2-RELEASE（imagebuilder构建，稳定版）
+          
           📂 来源： https://fw.koolcenter.com/iStoreOS/ib/armsr/
-          🧠 内核： 登录后可通过「系统 → Amlogic Service」更换
+          
+          🧠 内核： Please Login to iStoreOS → System → Amlogic Service → Replace the Kernel
+          
           🧩 集成： 基础组件、驱动、网络工具、容器支持及OpenAppFilter插件
-          📦 附加： 包含OpenAppFilter相关IPK文件
+          
+          🆕 附加： 所有OpenAppFilter相关IPK文件（自动收集，不限制版本）
+          
           👤 用户名： root | 密码： 无
+          
           🌐 IP： ${{ inputs.network_settings == 'static' && inputs.ipaddr || '单网口-动态获取；多网口-192.168.100.1' }}
         files: |
           imagebuilder/bin/targets/armsr/armv8/*generic-rootfs.tar.gz
