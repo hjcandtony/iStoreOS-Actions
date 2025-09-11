@@ -1,4 +1,4 @@
-﻿name: 💿 St1_Build-Rootfs-release+appfilter
+name: 💿 St1_Build-Rootfs-release+appfilter
 on:
   workflow_dispatch:
     inputs:
@@ -41,20 +41,14 @@ jobs:
 
     - name: ⚙️ 设置IP和网关
       run: |
-        echo "当前网络配置路径"
         CONFIG_PATH="./files/etc/uci-defaults/99-custom.sh"
-        echo $CONFIG_PATH
         if [ "${{ inputs.network_settings }}" = "static" ]; then
-           echo "删除网络设置-dhcp"
            sed -i '44,105d' "$CONFIG_PATH"
-           echo "替换默认配置"
            sed -i "/ipaddr/s/192.168.5.88/${{ inputs.ipaddr }}/g" "$CONFIG_PATH"
            sed -i "/gateway/s/192.168.5.1/${{ inputs.gateway }}/g" "$CONFIG_PATH"
         else
-           echo "删除网络设置-static"
            sed -i '36,42d' "$CONFIG_PATH"
         fi
-        echo "输出配置"
         cat $CONFIG_PATH
 
     - name: ⏬ 安装依赖
@@ -71,7 +65,6 @@ jobs:
     - name: ⏬ 克隆 OpenAppFilter 插件
       run: |
         git clone https://github.com/destan19/OpenAppFilter.git openappfilter
-        # 复制 OpenAppFilter 到 imagebuilder 的 package 目录
         mkdir -p imagebuilder/package/openappfilter
         cp -r openappfilter/* imagebuilder/package/openappfilter/
 
@@ -82,86 +75,53 @@ jobs:
         find files/packages/ -name "*.ipk" -exec cp {} imagebuilder/packages/ \;
         
         mkdir -p imagebuilder/files/etc/{uci-defaults,opkg,banner1}
-        #添加开机启动脚本
         cp files/etc/uci-defaults/99-custom.sh imagebuilder/files/etc/uci-defaults/
-        #替换软件源
         cp files/etc/opkg/distfeeds.conf imagebuilder/files/etc/opkg/
-        #替换O大打包脚本的默认banner
         cp files/etc/banner imagebuilder/files/etc/banner1/
         mkdir -p imagebuilder/files/etc/openclash/core
         cp files/etc/openclash/core/clash_meta imagebuilder/files/etc/openclash/core/
-        #临时解决通过晶晨宝盒写入emmc后根分区变为只读状态问题
         cp files/etc/rc.local imagebuilder/files/etc/
         
         cd imagebuilder
-        echo "启用rootfs.tar.gz配置并停用非必要配置"
         sed -i 's/# CONFIG_TARGET_ROOTFS_TARGZ is not set/CONFIG_TARGET_ROOTFS_TARGZ=y/' .config
         sed -i "s|CONFIG_TARGET_ROOTFS_SQUASHFS=.*|# CONFIG_TARGET_ROOTFS_SQUASHFS is not set|g" .config
         sed -i "s|CONFIG_TARGET_IMAGES_GZIP=.*|# CONFIG_TARGET_IMAGES_GZIP is not set|g" .config
         
-        # 添加 OpenAppFilter 到编译包列表
-        echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
+        # 启用OpenAppFilter相关组件
         echo "CONFIG_PACKAGE_oaf=y" >> .config
-        
-        echo "打印action目录结构"
-        tree -L 1
+        echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
+        echo "CONFIG_PACKAGE_luci-i18n-oaf-zh-cn=y" >> .config
 
     - name: 🧱 构建iStoreOS-rootfs和插件
       working-directory: ./imagebuilder
       run: |
-        echo "打印imagebuilder目录结构"
-        tree -L 1
-        echo "打印repositories"
-        cat repositories.conf
-        echo "打印Makefile"
-        cat Makefile |grep here
         bash ./build24.sh
 
-    - name: 📦 打印产出文件
+    - name: 📌 收集所有编译生成的IPK文件
+      id: collect_ipks
       run: |
-        echo "打印bin目录（rootfs）"
-        ls -lah imagebuilder/bin/targets/armsr/armv8/
-        echo "打印packages目录（OpenAppFilter插件）"
-        ls -lah imagebuilder/packages/ | grep -E "oaf|appfilter"
+        mkdir -p all_ipk_packages
+        # 收集所有编译产出的.ipk文件（包括系统默认和自定义插件）
+        find imagebuilder/bin/packages/ -name "*.ipk" -exec cp {} all_ipk_packages/ \;
+        find imagebuilder/packages/ -name "*.ipk" -exec cp {} all_ipk_packages/ \;
+        echo "收集到的IPK文件数量: $(ls -1 all_ipk_packages/*.ipk | wc -l)"
+        ls -l all_ipk_packages/
+        echo "ipk_path=all_ipk_packages/*.ipk" >> $GITHUB_OUTPUT
 
-    # 新增步骤：收集OpenAppFilter插件文件
-    - name: 📌 收集OpenAppFilter插件
-      id: collect_oaf
-      run: |
-        # 创建插件输出目录
-        mkdir -p oaf_packages
-        # 复制OpenAppFilter相关的.ipk文件
-        find imagebuilder/packages/ -name "luci-app-oaf_*.ipk" -exec cp {} oaf_packages/ \;
-        find imagebuilder/packages/ -name "oaf_*.ipk" -exec cp {} oaf_packages/ \;
-        find imagebuilder/packages/ -name "luci-i18n-appfilter-zh-cn_*.ipk" -exec cp {} oaf_packages/ \;
-        # 输出收集到的插件
-        echo "收集到的OpenAppFilter插件："
-        ls -l oaf_packages/
-        # 设置插件路径变量
-        echo "oaf_path=oaf_packages/*.ipk" >> $GITHUB_OUTPUT
-
-    - name: 🚀 上传到 Release（包含固件和插件）
+    - name: 🚀 上传到 Release
       uses: softprops/action-gh-release@v2.2.1
       with:
         tag_name: iStoreOS-24.10-RELEASE-${{ inputs.network_settings }}
         body: |
           📌 版本： iStoreOS-24.10.2-RELEASE（imagebuilder构建，稳定版）
-          
           📂 来源： https://fw.koolcenter.com/iStoreOS/ib/armsr/
-          
-          🧠 内核： Please Login to iStoreOS → System → Amlogic Service → Replace the Kernel
-          
-          🧩 集成： 包含了基础系统组件、驱动、网络工具、容器支持、LuCI界面及插件等。与官方集成列表基本一致
-          
-          🆕 新增： OpenAppFilter 应用过滤插件（含单独插件文件）
-          
-          👤 用户名： root
-          
-          🔒 密码： 无
-          
-          🌐 IP： ${{ inputs.network_settings == 'static' && inputs.ipaddr || '单网口-动态获取（从上级路由找寻）；多网口-IP：192.168.100.1' }}
+          🧠 内核： 登录后可通过「系统 → Amlogic Service」更换
+          🧩 集成： 基础组件、驱动、网络工具、容器支持及OpenAppFilter插件
+          📦 附加： 包含所有编译生成的IPK文件
+          👤 用户名： root | 密码： 无
+          🌐 IP： ${{ inputs.network_settings == 'static' && inputs.ipaddr || '单网口-动态获取；多网口-192.168.100.1' }}
         files: |
           imagebuilder/bin/targets/armsr/armv8/*generic-rootfs.tar.gz
-          ${{ steps.collect_oaf.outputs.oaf_path }}
+          ${{ steps.collect_ipks.outputs.ipk_path }}
       env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
