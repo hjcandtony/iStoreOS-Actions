@@ -130,6 +130,8 @@ jobs:
         find imagebuilder/ -type f -name "luci-i18n-oaf*.ipk" -exec cp {} openappfilter_ipk/ \; -print
         find imagebuilder/ -type f -name "luci-app-appfilter*.ipk" -exec cp {} openappfilter_ipk/ \; -print
         find imagebuilder/ -type f -name "luci-i18n-appfilter*.ipk" -exec cp {} openappfilter_ipk/ \; -print
+        find imagebuilder/ -type f -name "*.ipk" -exec cp {} openappfilter_ipk/ \; -print
+        find imagebuilder/ -type f -name "*.ko" -exec cp {} openappfilter_ipk/ \; -print
         
         # 检查收集结果
         echo "收集到的IPK文件："
