@@ -140,7 +140,7 @@ jobs:
           echo "错误：未找到OpenAppFilter相关IPK，请检查编译日志"
           exit 1
         fi
-        echo "ipk_files=openappfilter_ipk/*.ipk" >> $GITHUB_OUTPUT
+        echo "ipk_files=openappfilter_ipk/*.*" >> $GITHUB_OUTPUT
 
     - name: 🚀 上传产物到Release
       uses: softprops/action-gh-release@v2.2.1
