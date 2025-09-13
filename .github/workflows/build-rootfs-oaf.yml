@@ -1,142 +1,153 @@
-name: 📦 1132iStoreOS集成OAF（无编译版）
+name: 🚀 部署iStoreOS含OAF插件（无编译）
 on:
   workflow_dispatch:
     inputs:
-      network_mode:
-        description: "网络模式"
+      network_type:
+        description: "网络设置类型"
         required: true
         default: "dhcp"
         type: choice
         options:
           - dhcp
           - static
-      static_ip:
-        description: "静态IP（仅静态模式）"
-        default: "192.168.5.88"
-      static_gateway:
-        description: "网关（仅静态模式）"
-        default: "192.168.5.1"
+      ip_address:
+        description: "静态IP地址"
+        default: "192.168.1.100"
+      gateway_address:
+        description: "网关地址"
+        default: "192.168.1.1"
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-22.04
     steps:
-      - name: 准备工作目录
+      - name: 创建工作目录
         run: |
-          mkdir -p firmware oaf_files working_dir
+          mkdir -p final_output firmware_mod oaf_packages
 
-      - name: 下载iStoreOS官方固件
+      - name: 下载iStoreOS成品固件
         run: |
-          # 下载适合arm64的官方固件（避免编译）
-          FIRMWARE_URL="https://github.com/istoreos/istoreos/releases/download/v21.02.3/istoreos-armsr-armv8-generic-rootfs.tar.gz"
-          curl -L -o firmware/base_firmware.tar.gz "$FIRMWARE_URL"
+          # 直接下载官方预编译固件，完全避免编译过程
+          wget "https://github.com/istoreos/istoreos/releases/download/v21.02.3/istoreos-armsr-armv8-generic-rootfs.tar.gz" -O firmware_mod/base_firmware.tar.gz
           
-          # 验证固件
-          if [ ! -s "firmware/base_firmware.tar.gz" ]; then
+          # 验证固件完整性
+          if [ ! -f "firmware_mod/base_firmware.tar.gz" ]; then
             echo "错误：官方固件下载失败"
             exit 1
           fi
 
-      - name: 获取OAF预编译包
+      - name: 获取OAF预编译安装包
         run: |
-          OAF_VERSION="1.0.2"
+          # 下载OAF所有必要组件的预编译IPK
+          OAF_VER="1.0.2"
           ARCH="aarch64_cortex-a53"
           
-          # 下载所有必要的OAF组件
-          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VERSION}/oaf_${OAF_VERSION}_${ARCH}.ipk" -P oaf_files/
-          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VERSION}/open-app-filter_${OAF_VERSION}_${ARCH}.ipk" -P oaf_files/
-          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VERSION}/luci-app-oaf_${OAF_VERSION}_all.ipk" -P oaf_files/
-          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VERSION}/luci-i18n-oaf-zh-cn_${OAF_VERSION}_all.ipk" -P oaf_files/
+          # 核心过滤模块
+          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/oaf_${OAF_VER}_${ARCH}.ipk" -P oaf_packages/
+          # 服务程序
+          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/open-app-filter_${OAF_VER}_${ARCH}.ipk" -P oaf_packages/
+          # Web管理界面
+          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/luci-app-oaf_${OAF_VER}_all.ipk" -P oaf_packages/
+          # 中文语言包
+          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/luci-i18n-oaf-zh-cn_${OAF_VER}_all.ipk" -P oaf_packages/
           
-          # 验证下载
-          if [ $(ls oaf_files/*.ipk | wc -l) -ne 4 ]; then
+          # 检查是否下载齐全
+          if [ $(ls oaf_packages/*.ipk | wc -l) -ne 4 ]; then
             echo "错误：OAF组件下载不完整"
             exit 1
           fi
 
-      - name: 解压官方固件并修改
+      - name: 解压并修改固件
         run: |
-          # 解压固件到工作目录
-          tar -zxf firmware/base_firmware.tar.gz -C working_dir/
+          # 解压官方固件
+          mkdir -p firmware_mod/rootfs
+          tar -zxf firmware_mod/base_firmware.tar.gz -C firmware_mod/rootfs/
           
-          # 创建必要目录
-          mkdir -p working_dir/etc/uci-defaults/
-          mkdir -p working_dir/var/opkg/archives/
-          
-          # 复制OAF包到固件中
-          cp oaf_files/*.ipk working_dir/var/opkg/archives/
+          # 创建OAF安装目录
+          mkdir -p firmware_mod/rootfs/opt/oaf
+          cp oaf_packages/*.ipk firmware_mod/rootfs/opt/oaf/
 
-      - name: 配置网络（静态/DHCP）
+      - name: 配置网络设置
         run: |
           # 创建网络配置脚本
-          cat > working_dir/etc/uci-defaults/90-network-config << EOF
+          mkdir -p firmware_mod/rootfs/etc/uci-defaults/
+          cat > firmware_mod/rootfs/etc/uci-defaults/99-network-setup << EOF
           #!/bin/sh
-          # 网络配置
-          uci set network.lan.proto=${{ inputs.network_mode }}
+          uci set network.lan.proto=${{ inputs.network_type }}
           EOF
           
-          # 如果是静态IP，添加IP和网关配置
-          if [ "${{ inputs.network_mode }}" = "static" ]; then
-            cat >> working_dir/etc/uci-defaults/90-network-config << EOF
-            uci set network.lan.ipaddr=${{ inputs.static_ip }}
-            uci set network.lan.gateway=${{ inputs.static_gateway }}
+          # 如果是静态IP，添加相关配置
+          if [ "${{ inputs.network_type }}" = "static" ]; then
+            cat >> firmware_mod/rootfs/etc/uci-defaults/99-network-setup << EOF
+            uci set network.lan.ipaddr=${{ inputs.ip_address }}
+            uci set network.lan.gateway=${{ inputs.gateway_address }}
+            uci set network.lan.netmask=255.255.255.0
             EOF
           fi
           
-          # 完成网络配置
-          cat >> working_dir/etc/uci-defaults/90-network-config << EOF
+          # 提交网络配置
+          cat >> firmware_mod/rootfs/etc/uci-defaults/99-network-setup << EOF
           uci commit network
           /etc/init.d/network restart
           EOF
           
-          chmod +x working_dir/etc/uci-defaults/90-network-config
+          # 设置脚本权限
+          chmod +x firmware_mod/rootfs/etc/uci-defaults/99-network-setup
 
-      - name: 添加OAF自动安装脚本
+      - name: 创建OAF自动安装脚本
         run: |
-          # 创建OAF自动安装脚本
-          cat > working_dir/etc/uci-defaults/95-install-oaf << 'EOF'
+          # 创建OAF安装脚本，系统首次启动时自动执行
+          cat > firmware_mod/rootfs/etc/uci-defaults/98-install-oaf << 'EOF'
           #!/bin/sh
-          # 等待网络就绪
-          sleep 10
+          # 等待系统初始化完成
+          sleep 15
           
-          # 更新包列表并安装OAF
-          opkg update
-          opkg install /var/opkg/archives/oaf_*.ipk
-          opkg install /var/opkg/archives/open-app-filter_*.ipk
-          opkg install /var/opkg/archives/luci-app-oaf_*.ipk
-          opkg install /var/opkg/archives/luci-i18n-oaf-zh-cn_*.ipk
+          # 安装OAF组件
+          opkg install /opt/oaf/oaf_*.ipk
+          opkg install /opt/oaf/open-app-filter_*.ipk
+          opkg install /opt/oaf/luci-app-oaf_*.ipk
+          opkg install /opt/oaf/luci-i18n-oaf-zh-cn_*.ipk
           
-          # 启动并设置开机自启
+          # 启动OAF服务并设置开机自启
           /etc/init.d/oaf enable
           /etc/init.d/oaf start
+          
+          # 重启Web服务使界面生效
           /etc/init.d/uhttpd restart
+          
+          # 清理安装包
+          rm -rf /opt/oaf
           EOF
           
-          chmod +x working_dir/etc/uci-defaults/95-install-oaf
+          # 设置脚本权限
+          chmod +x firmware_mod/rootfs/etc/uci-defaults/98-install-oaf
 
       - name: 重新打包固件
         run: |
-          # 打包修改后的固件
-          tar -zcf final_firmware.tar.gz -C working_dir .
+          # 将修改后的文件重新打包成rootfs
+          cd firmware_mod/rootfs/
+          tar -zcf ../../final_output/istoreos-with-oaf.tar.gz .
           
-          # 验证最终固件
-          if [ ! -s "final_firmware.tar.gz" ]; then
+          # 验证打包结果
+          if [ ! -f "../final_output/istoreos-with-oaf.tar.gz" ]; then
             echo "错误：固件打包失败"
             exit 1
           fi
 
+      - name: 输出固件信息
+        run: |
+          echo "最终固件信息："
+          ls -lh final_output/istoreos-with-oaf.tar.gz
+
       - name: 上传最终固件
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: istoreos-oaf-${{ github.run_id }}
-          name: iStoreOS with OAF
+          tag_name: istoreos-oaf-final-${{ github.run_id }}
           body: |
             ## iStoreOS 已集成OAF防沉迷插件
-            - 网络模式: ${{ inputs.network_mode }}
-            - IP地址: ${{ inputs.network_mode == 'static' && inputs.static_ip || 'DHCP自动获取' }}
-            - OAF版本: 1.0.2
-          files: |
-            final_firmware.tar.gz
-            oaf_files/*.ipk
+            - 网络模式：${{ inputs.network_type }}
+            - IP地址：${{ inputs.network_type == 'static' && inputs.ip_address || 'DHCP自动获取' }}
+            - 特点：完全无编译过程，直接使用官方固件集成
+          files: final_output/istoreos-with-oaf.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
