@@ -1,153 +1,88 @@
-name: 🚀 部署iStoreOS含OAF插件（无编译）
+name: 💿 基于原始版本的OAF编译工作流
 on:
   workflow_dispatch:
     inputs:
-      network_type:
-        description: "网络设置类型"
+      network_settings:
+        description: "网络配置"
         required: true
-        default: "dhcp"
+        default: 'dhcp'
         type: choice
         options:
-          - dhcp
-          - static
-      ip_address:
-        description: "静态IP地址"
-        default: "192.168.1.100"
-      gateway_address:
-        description: "网关地址"
-        default: "192.168.1.1"
+          - 'static'
+          - 'dhcp'
+      ipaddr:
+        description: '管理IP（静态时必填）'
+        default: '192.168.5.88'
+      gateway:
+        description: '网关（静态时必填）'
+        default: '192.168.5.1'
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 创建工作目录
-        run: |
-          mkdir -p final_output firmware_mod oaf_packages
+    - name: 检出代码
+      uses: actions/checkout@v3
 
-      - name: 下载iStoreOS成品固件
-        run: |
-          # 直接下载官方预编译固件，完全避免编译过程
-          wget "https://github.com/istoreos/istoreos/releases/download/v21.02.3/istoreos-armsr-armv8-generic-rootfs.tar.gz" -O firmware_mod/base_firmware.tar.gz
-          
-          # 验证固件完整性
-          if [ ! -f "firmware_mod/base_firmware.tar.gz" ]; then
-            echo "错误：官方固件下载失败"
-            exit 1
-          fi
+    - name: 安装依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses5-dev zstd curl git libssl-dev
 
-      - name: 获取OAF预编译安装包
-        run: |
-          # 下载OAF所有必要组件的预编译IPK
-          OAF_VER="1.0.2"
-          ARCH="aarch64_cortex-a53"
-          
-          # 核心过滤模块
-          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/oaf_${OAF_VER}_${ARCH}.ipk" -P oaf_packages/
-          # 服务程序
-          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/open-app-filter_${OAF_VER}_${ARCH}.ipk" -P oaf_packages/
-          # Web管理界面
-          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/luci-app-oaf_${OAF_VER}_all.ipk" -P oaf_packages/
-          # 中文语言包
-          wget "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/luci-i18n-oaf-zh-cn_${OAF_VER}_all.ipk" -P oaf_packages/
-          
-          # 检查是否下载齐全
-          if [ $(ls oaf_packages/*.ipk | wc -l) -ne 4 ]; then
-            echo "错误：OAF组件下载不完整"
-            exit 1
-          fi
+    - name: 下载ImageBuilder
+      run: |
+        # 使用原始可编译的ImageBuilder版本
+        curl -L -o imagebuilder.tar.zst "https://github.com/Kwonelee/iStoreOS-Actions/releases/download/iStoreOS-ImageBuilder-20250905/istoreos-imagebuilder-armsr-armv8.Linux-x86_64.tar.zst"
+        mkdir -p imagebuilder
+        tar --use-compress-program=unzstd -xvf imagebuilder.tar.zst -C imagebuilder --strip-components=1
 
-      - name: 解压并修改固件
-        run: |
-          # 解压官方固件
-          mkdir -p firmware_mod/rootfs
-          tar -zxf firmware_mod/base_firmware.tar.gz -C firmware_mod/rootfs/
-          
-          # 创建OAF安装目录
-          mkdir -p firmware_mod/rootfs/opt/oaf
-          cp oaf_packages/*.ipk firmware_mod/rootfs/opt/oaf/
+    - name: 克隆OAF源码（原始目录结构）
+      run: |
+        # 保持原始目录结构，不修改路径
+        git clone https://github.com/destan19/OpenAppFilter.git imagebuilder/package/OpenAppFilter
 
-      - name: 配置网络设置
-        run: |
-          # 创建网络配置脚本
-          mkdir -p firmware_mod/rootfs/etc/uci-defaults/
-          cat > firmware_mod/rootfs/etc/uci-defaults/99-network-setup << EOF
-          #!/bin/sh
-          uci set network.lan.proto=${{ inputs.network_type }}
-          EOF
-          
-          # 如果是静态IP，添加相关配置
-          if [ "${{ inputs.network_type }}" = "static" ]; then
-            cat >> firmware_mod/rootfs/etc/uci-defaults/99-network-setup << EOF
-            uci set network.lan.ipaddr=${{ inputs.ip_address }}
-            uci set network.lan.gateway=${{ inputs.gateway_address }}
-            uci set network.lan.netmask=255.255.255.0
-            EOF
-          fi
-          
-          # 提交网络配置
-          cat >> firmware_mod/rootfs/etc/uci-defaults/99-network-setup << EOF
-          uci commit network
-          /etc/init.d/network restart
-          EOF
-          
-          # 设置脚本权限
-          chmod +x firmware_mod/rootfs/etc/uci-defaults/99-network-setup
+    - name: 验证OAF组件结构（关键）
+      run: |
+        # 确保原始Makefile存在且未被破坏
+        if [ ! -f "imagebuilder/package/OpenAppFilter/luci-app-oaf/Makefile" ]; then
+          echo "错误：原始luci-app-oaf的Makefile缺失"
+          exit 1
+        fi
+        # 检查Makefile中的核心编译规则
+        if ! grep -q "define Build/Compile" "imagebuilder/package/OpenAppFilter/luci-app-oaf/Makefile"; then
+          echo "错误：Makefile中缺失编译规则"
+          exit 1
+        fi
 
-      - name: 创建OAF自动安装脚本
-        run: |
-          # 创建OAF安装脚本，系统首次启动时自动执行
-          cat > firmware_mod/rootfs/etc/uci-defaults/98-install-oaf << 'EOF'
-          #!/bin/sh
-          # 等待系统初始化完成
-          sleep 15
-          
-          # 安装OAF组件
-          opkg install /opt/oaf/oaf_*.ipk
-          opkg install /opt/oaf/open-app-filter_*.ipk
-          opkg install /opt/oaf/luci-app-oaf_*.ipk
-          opkg install /opt/oaf/luci-i18n-oaf-zh-cn_*.ipk
-          
-          # 启动OAF服务并设置开机自启
-          /etc/init.d/oaf enable
-          /etc/init.d/oaf start
-          
-          # 重启Web服务使界面生效
-          /etc/init.d/uhttpd restart
-          
-          # 清理安装包
-          rm -rf /opt/oaf
-          EOF
-          
-          # 设置脚本权限
-          chmod +x firmware_mod/rootfs/etc/uci-defaults/98-install-oaf
+    - name: 配置编译选项（原始方式）
+      run: |
+        cd imagebuilder
+        # 启用OAF组件（原始配置方式）
+        echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
+        echo "CONFIG_PACKAGE_oaf=y" >> .config
+        echo "CONFIG_PACKAGE_open-app-filter=y" >> .config
+        # 配置输出格式
+        echo "CONFIG_TARGET_ROOTFS_TARGZ=y" >> .config
 
-      - name: 重新打包固件
-        run: |
-          # 将修改后的文件重新打包成rootfs
-          cd firmware_mod/rootfs/
-          tar -zcf ../../final_output/istoreos-with-oaf.tar.gz .
-          
-          # 验证打包结果
-          if [ ! -f "../final_output/istoreos-with-oaf.tar.gz" ]; then
-            echo "错误：固件打包失败"
-            exit 1
-          fi
+    - name: 编译OAF组件（原始命令）
+      working-directory: ./imagebuilder
+      run: |
+        # 使用原始编译命令，不修改路径
+        make package/luci-app-oaf/compile V=s
+        make package/oaf/compile V=s
+        make package/open-app-filter/compile V=s
 
-      - name: 输出固件信息
-        run: |
-          echo "最终固件信息："
-          ls -lh final_output/istoreos-with-oaf.tar.gz
+    - name: 构建rootfs
+      working-directory: ./imagebuilder
+      run: |
+        make image V=s
+        # 验证输出
+        find bin/targets/ -name "*rootfs.tar.gz"
 
-      - name: 上传最终固件
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: istoreos-oaf-final-${{ github.run_id }}
-          body: |
-            ## iStoreOS 已集成OAF防沉迷插件
-            - 网络模式：${{ inputs.network_type }}
-            - IP地址：${{ inputs.network_type == 'static' && inputs.ip_address || 'DHCP自动获取' }}
-            - 特点：完全无编译过程，直接使用官方固件集成
-          files: final_output/istoreos-with-oaf.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+    - name: 上传结果
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: oaf-original-fix-${{ github.run_id }}
+        files: imagebuilder/bin/targets/armsr/armv8/*rootfs.tar.gz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
