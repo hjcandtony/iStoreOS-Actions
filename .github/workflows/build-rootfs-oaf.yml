@@ -1,88 +1,111 @@
-name: 💿 基于原始版本的OAF编译工作流
+name: 🔧 OpenWrt规范编译OAF
 on:
   workflow_dispatch:
     inputs:
-      network_settings:
-        description: "网络配置"
+      network_mode:
+        description: "网络模式"
         required: true
-        default: 'dhcp'
+        default: "dhcp"
         type: choice
         options:
-          - 'static'
-          - 'dhcp'
-      ipaddr:
-        description: '管理IP（静态时必填）'
-        default: '192.168.5.88'
-      gateway:
-        description: '网关（静态时必填）'
-        default: '192.168.5.1'
+          - dhcp
+          - static
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-    - name: 检出代码
-      uses: actions/checkout@v3
+      - name: 准备环境
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev zstd curl git libssl-dev unzip
 
-    - name: 安装依赖
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential libncurses5-dev zstd curl git libssl-dev
+      - name: 下载并初始化ImageBuilder
+        run: |
+          # 下载官方ImageBuilder
+          IMAGEBUILDER_URL="https://github.com/Kwonelee/iStoreOS-Actions/releases/download/iStoreOS-ImageBuilder-20250905/istoreos-imagebuilder-armsr-armv8.Linux-x86_64.tar.zst"
+          curl -L -o imagebuilder.tar.zst "$IMAGEBUILDER_URL"
+          mkdir -p imagebuilder
+          tar --use-compress-program=unzstd -xvf imagebuilder.tar.zst -C imagebuilder --strip-components=1
+          
+          # 初始化feeds系统（关键步骤）
+          cd imagebuilder
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-    - name: 下载ImageBuilder
-      run: |
-        # 使用原始可编译的ImageBuilder版本
-        curl -L -o imagebuilder.tar.zst "https://github.com/Kwonelee/iStoreOS-Actions/releases/download/iStoreOS-ImageBuilder-20250905/istoreos-imagebuilder-armsr-armv8.Linux-x86_64.tar.zst"
-        mkdir -p imagebuilder
-        tar --use-compress-program=unzstd -xvf imagebuilder.tar.zst -C imagebuilder --strip-components=1
+      - name: 正确放置OAF组件（符合OpenWrt规范）
+        run: |
+          # 克隆OAF源码
+          git clone --depth 1 https://github.com/destan19/OpenAppFilter.git oaf-source
+          
+          # OpenWrt要求每个包必须直接放在package目录下
+          # 错误方式：package/OpenAppFilter/luci-app-oaf
+          # 正确方式：package/luci-app-oaf
+          
+          # 移动组件到正确位置
+          cd oaf-source
+          for pkg in luci-app-oaf oaf open-app-filter; do
+            mv "$pkg" ../imagebuilder/package/
+          done
+          cd ..
+          
+          # 验证目录结构（必须直接在package下）
+          echo "验证OAF组件目录结构："
+          ls -la imagebuilder/package/luci-app-oaf
+          ls -la imagebuilder/package/oaf
+          ls -la imagebuilder/package/open-app-filter
 
-    - name: 克隆OAF源码（原始目录结构）
-      run: |
-        # 保持原始目录结构，不修改路径
-        git clone https://github.com/destan19/OpenAppFilter.git imagebuilder/package/OpenAppFilter
+      - name: 检查Makefile完整性
+        run: |
+          # 验证关键Makefile存在
+          for pkg in luci-app-oaf oaf open-app-filter; do
+            if [ ! -f "imagebuilder/package/$pkg/Makefile" ]; then
+              echo "错误：$pkg 缺失Makefile"
+              exit 1
+            fi
+            # 验证Makefile包含编译规则
+            if ! grep -q "define Package/$pkg/compile" "imagebuilder/package/$pkg/Makefile"; then
+              echo "错误：$pkg 的Makefile缺失编译规则"
+              exit 1
+            fi
+          done
 
-    - name: 验证OAF组件结构（关键）
-      run: |
-        # 确保原始Makefile存在且未被破坏
-        if [ ! -f "imagebuilder/package/OpenAppFilter/luci-app-oaf/Makefile" ]; then
-          echo "错误：原始luci-app-oaf的Makefile缺失"
-          exit 1
-        fi
-        # 检查Makefile中的核心编译规则
-        if ! grep -q "define Build/Compile" "imagebuilder/package/OpenAppFilter/luci-app-oaf/Makefile"; then
-          echo "错误：Makefile中缺失编译规则"
-          exit 1
-        fi
+      - name: 配置编译选项
+        run: |
+          cd imagebuilder
+          
+          # 生成默认配置
+          make defconfig
+          
+          # 启用OAF组件
+          echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
+          echo "CONFIG_PACKAGE_oaf=y" >> .config
+          echo "CONFIG_PACKAGE_open-app-filter=y" >> .config
+          
+          # 应用配置
+          make defconfig
 
-    - name: 配置编译选项（原始方式）
-      run: |
-        cd imagebuilder
-        # 启用OAF组件（原始配置方式）
-        echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
-        echo "CONFIG_PACKAGE_oaf=y" >> .config
-        echo "CONFIG_PACKAGE_open-app-filter=y" >> .config
-        # 配置输出格式
-        echo "CONFIG_TARGET_ROOTFS_TARGZ=y" >> .config
+      - name: 编译OAF组件（最终方案）
+        working-directory: ./imagebuilder
+        run: |
+          # 先更新包索引
+          make package/index V=s
+          
+          # 编译组件（使用绝对路径）
+          make package/luci-app-oaf/compile V=s
+          make package/oaf/compile V=s
+          make package/open-app-filter/compile V=s
 
-    - name: 编译OAF组件（原始命令）
-      working-directory: ./imagebuilder
-      run: |
-        # 使用原始编译命令，不修改路径
-        make package/luci-app-oaf/compile V=s
-        make package/oaf/compile V=s
-        make package/open-app-filter/compile V=s
+      - name: 构建最终镜像
+        working-directory: ./imagebuilder
+        run: |
+          make image V=s
+          find bin/targets/ -name "*rootfs.tar.gz" -exec cp {} ../ \;
 
-    - name: 构建rootfs
-      working-directory: ./imagebuilder
-      run: |
-        make image V=s
-        # 验证输出
-        find bin/targets/ -name "*rootfs.tar.gz"
-
-    - name: 上传结果
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: oaf-original-fix-${{ github.run_id }}
-        files: imagebuilder/bin/targets/armsr/armv8/*rootfs.tar.gz
-      env:
-        GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: 上传结果
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: oaf-correct-structure-${{ github.run_id }}
+          files: "*.tar.gz"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
