@@ -1,4 +1,4 @@
-name: 💿 1114St1_Build-Rootfs-release-oaf
+name: 💿 1117St1_Build-Rootfs-release-oaf
 on:
   workflow_dispatch:
     inputs:
@@ -61,8 +61,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y \
           build-essential libncurses5-dev zstd curl unzip tree git \
-          libssl-dev python3-distutils libgmp3-dev libmpc-dev file \
-          rsync  # 新增rsync用于可靠复制文件
+          libssl-dev python3-distutils libgmp3-dev libmpc-dev file rsync
 
     - name: ⏬ 下载并配置iStoreOS ImageBuilder
       run: |
@@ -88,9 +87,9 @@ jobs:
           exit 1
         fi
 
-    - name: ⏬ 克隆并修复OpenAppFilter源码（符合OpenWrt规范）
+    - name: ⏬ 克隆并修复OpenAppFilter源码
       run: |
-        # 克隆源码（指定分支确保稳定性）
+        # 克隆源码
         git clone --depth 1 https://github.com/destan19/OpenAppFilter.git temp_oaf
         
         # 定义必要组件
@@ -106,18 +105,19 @@ jobs:
             exit 1
           fi
           
-          # 2. 复制组件到package目录（使用rsync确保权限和结构）
+          # 2. 复制组件到package目录
           DST_DIR="$OAF_PACKAGE_DIR/$comp"
           rsync -av "$SRC_DIR/" "$DST_DIR/"
           
-          # 3. 验证关键文件（必须存在Makefile和正确结构）
+          # 3. 验证关键文件
           if [ ! -f "$DST_DIR/Makefile" ]; then
             echo "错误：组件 $comp 缺失Makefile（路径：$DST_DIR/Makefile）"
             exit 1
           fi
           
-          # 4. 修复Makefile中的可能路径问题（适配ImageBuilder）
-          sed -i "s|$(TOPDIR)/package/OpenAppFilter/|$(TOPDIR)/package/|g" "$DST_DIR/Makefile"
+          # 4. 修复Makefile中的路径引用（移除TOPDIR变量引用）
+          sed -i "s|\$(TOPDIR)/package/OpenAppFilter/|../|g" "$DST_DIR/Makefile"
+          sed -i "s|\$(TOPDIR)/package/|../|g" "$DST_DIR/Makefile"
           
           # 5. 验证修复结果
           echo "组件 $comp 验证通过，目录结构："
@@ -127,13 +127,11 @@ jobs:
         # 清理临时文件
         rm -rf temp_oaf
         
-        # 生成package索引（关键：让ImageBuilder识别新组件）
+        # 替代方案：创建packages目录软链接让ImageBuilder识别
         cd imagebuilder
-        make package/index V=s
-        
-        # 验证组件是否被识别
-        echo "ImageBuilder识别的OAF组件："
-        grep -E "luci-app-oaf|oaf|open-app-filter" package/index | cut -d' ' -f1
+        if [ ! -L "packages" ]; then
+          ln -s package packages
+        fi
 
     - name: ⏬ 配置ImageBuilder编译选项
       run: |
@@ -144,8 +142,7 @@ jobs:
         sed -i '/CONFIG_PACKAGE_oaf/d' .config
         sed -i '/CONFIG_PACKAGE_open-app-filter/d' .config
         
-        # 强制启用OAF组件（使用ImageBuilder的配置命令）
-        make defconfig  # 先加载默认配置
+        # 强制启用OAF组件
         echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
         echo "CONFIG_PACKAGE_oaf=y" >> .config
         echo "CONFIG_PACKAGE_open-app-filter=y" >> .config
@@ -162,9 +159,6 @@ jobs:
           echo "CONFIG_PACKAGE_docker=y" >> .config
           echo "CONFIG_PACKAGE_docker-compose=y" >> .config
         fi
-        
-        # 应用配置
-        make defconfig
 
     - name: 🛠️ 修正build24.sh确保OAF被包含
       run: |
@@ -183,17 +177,17 @@ jobs:
           echo 'PACKAGES="$PACKAGES docker docker-compose"' >> imagebuilder/build24.sh
         fi
 
-    - name: 🧱 编译OAF组件（使用OpenWrt标准命令）
+    - name: 🧱 编译OAF组件
       working-directory: ./imagebuilder
       run: |
-        # 关键：先更新package索引
-        make package/update V=s
+        # 关键：使用ImageBuilder兼容的方式更新包信息
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
         
-        # 编译luci-app-oaf（带详细日志）
+        # 编译luci-app-oaf
         echo "=== 编译luci-app-oaf ==="
         if ! make package/luci-app-oaf/compile V=s; then
-          echo "错误：luci-app-oaf编译失败，查看以下日志："
-          cat build_dir/target-aarch64_generic_musl/luci-app-oaf/compile.log 2>/dev/null
+          echo "错误：luci-app-oaf编译失败"
           exit 1
         fi
         
