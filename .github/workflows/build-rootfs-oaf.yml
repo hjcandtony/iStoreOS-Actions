@@ -1,111 +1,94 @@
-name: 🔧 OpenWrt规范编译OAF
+name: 🔨 编译OpenAppFilter插件(x86/内核6.6)
 on:
   workflow_dispatch:
-    inputs:
-      network_mode:
-        description: "网络模式"
-        required: true
-        default: "dhcp"
-        type: choice
-        options:
-          - dhcp
-          - static
 
 jobs:
-  build:
+  build-oaf:
     runs-on: ubuntu-22.04
     steps:
-      - name: 准备环境
+      - name: 准备编译环境
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libncurses5-dev zstd curl git libssl-dev unzip
+          sudo apt-get install -y \
+            build-essential subversion libncurses5-dev zlib1g-dev \
+            gawk gcc-multilib flex git gettext libssl-dev \
+            unzip python3 python3-distutils python3-setuptools
 
-      - name: 下载并初始化ImageBuilder
+      - name: 获取OpenWrt x86 6.6内核源码
         run: |
-          # 下载官方ImageBuilder
-          IMAGEBUILDER_URL="https://github.com/Kwonelee/iStoreOS-Actions/releases/download/iStoreOS-ImageBuilder-20250905/istoreos-imagebuilder-armsr-armv8.Linux-x86_64.tar.zst"
-          curl -L -o imagebuilder.tar.zst "$IMAGEBUILDER_URL"
-          mkdir -p imagebuilder
-          tar --use-compress-program=unzstd -xvf imagebuilder.tar.zst -C imagebuilder --strip-components=1
+          # 克隆OpenWrt源码，切换到6.6内核分支
+          git clone https://github.com/openwrt/openwrt.git
+          cd openwrt
           
-          # 初始化feeds系统（关键步骤）
-          cd imagebuilder
+          # 切换到支持6.6内核的版本
+          git checkout openwrt-23.05
+          
+          # 更新并安装feeds
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
-      - name: 正确放置OAF组件（符合OpenWrt规范）
-        run: |
-          # 克隆OAF源码
-          git clone --depth 1 https://github.com/destan19/OpenAppFilter.git oaf-source
           
-          # OpenWrt要求每个包必须直接放在package目录下
-          # 错误方式：package/OpenAppFilter/luci-app-oaf
-          # 正确方式：package/luci-app-oaf
+          # 配置x86架构和6.6内核
+          echo "CONFIG_TARGET_x86=y" > .config
+          echo "CONFIG_TARGET_x86_64=y" >> .config
+          echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
+          echo "CONFIG_KERNEL_VERSION=6.6" >> .config
           
-          # 移动组件到正确位置
-          cd oaf-source
-          for pkg in luci-app-oaf oaf open-app-filter; do
-            mv "$pkg" ../imagebuilder/package/
-          done
-          cd ..
-          
-          # 验证目录结构（必须直接在package下）
-          echo "验证OAF组件目录结构："
-          ls -la imagebuilder/package/luci-app-oaf
-          ls -la imagebuilder/package/oaf
-          ls -la imagebuilder/package/open-app-filter
-
-      - name: 检查Makefile完整性
-        run: |
-          # 验证关键Makefile存在
-          for pkg in luci-app-oaf oaf open-app-filter; do
-            if [ ! -f "imagebuilder/package/$pkg/Makefile" ]; then
-              echo "错误：$pkg 缺失Makefile"
-              exit 1
-            fi
-            # 验证Makefile包含编译规则
-            if ! grep -q "define Package/$pkg/compile" "imagebuilder/package/$pkg/Makefile"; then
-              echo "错误：$pkg 的Makefile缺失编译规则"
-              exit 1
-            fi
-          done
-
-      - name: 配置编译选项
-        run: |
-          cd imagebuilder
-          
-          # 生成默认配置
+          # 生成初步配置
           make defconfig
-          
-          # 启用OAF组件
+
+      - name: 下载OpenAppFilter源码
+        run: |
+          # 按照官方教程克隆到package目录
+          cd openwrt
+          git clone https://github.com/destan19/OpenAppFilter.git package/OpenAppFilter
+
+      - name: 开启OpenAppFilter编译选项
+        run: |
+          cd openwrt
+          # 按照官方教程开启三个模块的编译选项
           echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
-          echo "CONFIG_PACKAGE_oaf=y" >> .config
-          echo "CONFIG_PACKAGE_open-app-filter=y" >> .config
-          
-          # 应用配置
-          make defconfig
+          make defconfig  # 自动开启依赖的其他两个模块
 
-      - name: 编译OAF组件（最终方案）
-        working-directory: ./imagebuilder
+      - name: 编译OpenAppFilter插件
         run: |
-          # 先更新包索引
-          make package/index V=s
-          
-          # 编译组件（使用绝对路径）
+          cd openwrt
+          # 仅编译OpenAppFilter相关组件，不重新编译整个固件
           make package/luci-app-oaf/compile V=s
-          make package/oaf/compile V=s
           make package/open-app-filter/compile V=s
+          make package/oaf/compile V=s
 
-      - name: 构建最终镜像
-        working-directory: ./imagebuilder
+      - name: 验证编译结果
         run: |
-          make image V=s
-          find bin/targets/ -name "*rootfs.tar.gz" -exec cp {} ../ \;
+          # 检查IPK文件是否生成
+          cd openwrt
+          find bin/packages/ -name "oaf*.ipk" -o -name "open-app-filter*.ipk"
+          
+          # 确认所有必要组件都已编译
+          OAF_IPK_COUNT=$(find bin/packages/ -name "oaf*.ipk" -o -name "open-app-filter*.ipk" | wc -l)
+          if [ $OAF_IPK_COUNT -ne 4 ]; then
+            echo "错误：OpenAppFilter组件编译不完整"
+            exit 1
+          fi
 
-      - name: 上传结果
+      - name: 收集编译产物
+        run: |
+          # 创建输出目录并复制IPK文件
+          mkdir -p oaf-output
+          cd openwrt
+          find bin/packages/ -name "oaf*.ipk" -o -name "open-app-filter*.ipk" -exec cp {} ../oaf-output/ \;
+          cd ..
+          ls -l oaf-output/
+
+      - name: 上传编译结果
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: oaf-correct-structure-${{ github.run_id }}
-          files: "*.tar.gz"
+          tag_name: openappfilter-x86-6.6-${{ github.run_id }}
+          name: OpenAppFilter for x86 (Kernel 6.6)
+          body: |
+            OpenAppFilter插件编译产物
+            - 架构: x86_64
+            - 内核版本: 6.6
+            - 包含组件: luci-app-oaf, oaf, open-app-filter及其语言包
+          files: oaf-output/*.ipk
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
