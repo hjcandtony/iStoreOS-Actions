@@ -1,4 +1,4 @@
-name: 💿 1106St1_Build-Rootfs-release-oaf
+name: 💿 1110St1_Build-Rootfs-release-oaf
 on:
   workflow_dispatch:
     inputs:
@@ -93,7 +93,6 @@ jobs:
         git clone https://github.com/destan19/OpenAppFilter.git temp_oaf
         
         # 关键修复：调整OAF目录结构以适配ImageBuilder
-        # ImageBuilder要求每个组件直接放在package目录下，而非子目录
         OAF_COMPONENTS=("luci-app-oaf" "oaf" "open-app-filter")
         for comp in "${OAF_COMPONENTS[@]}"; do
           # 检查组件是否存在
@@ -101,7 +100,7 @@ jobs:
             echo "错误：OAF组件 $comp 缺失"
             exit 1
           fi
-          # 直接复制组件到package目录（而非嵌套在OpenAppFilter下）
+          # 直接复制组件到package目录
           cp -r "temp_oaf/$comp" "imagebuilder/package/"
           # 验证复制结果
           if [ ! -d "imagebuilder/package/$comp" ]; then
@@ -113,9 +112,16 @@ jobs:
         # 清理临时文件
         rm -rf temp_oaf
         
-        # 显示最终package目录结构
+        # 修复：使用更可靠的方式显示package目录下的OAF组件
         echo "package目录下的OAF组件："
-        ls -l imagebuilder/package/ | grep -E "${OAF_COMPONENTS[*]}"
+        for comp in "${OAF_COMPONENTS[@]}"; do
+          if [ -d "imagebuilder/package/$comp" ]; then
+            echo "✓ 找到组件: $comp"
+          else
+            echo "✗ 缺失组件: $comp"
+            exit 1
+          fi
+        done
 
     - name: ⏬ 复制必备文件并配置ImageBuilder
       run: |
@@ -140,7 +146,7 @@ jobs:
         echo "CONFIG_TARGET_ROOTFS_TARGZ=y" >> .config
         echo "# CONFIG_TARGET_ROOTFS_SQUASHFS is not set" >> .config
         
-        # 配置OAF编译选项（直接针对组件）
+        # 配置OAF编译选项
         echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
         echo "CONFIG_PACKAGE_oaf=y" >> .config
         echo "CONFIG_PACKAGE_open-app-filter=y" >> .config
@@ -169,40 +175,55 @@ jobs:
           echo 'PACKAGES="$PACKAGES docker docker-compose"' >> imagebuilder/build24.sh
         fi
 
-    - name: 🧱 编译OAF组件（修正路径）
+    - name: 🧱 编译OAF组件
       working-directory: ./imagebuilder
       run: |
-        # 关键修复：直接使用组件名编译，而非嵌套路径
+        # 编译luci-app-oaf
         echo "编译luci-app-oaf"
-        make package/luci-app-oaf/compile V=s -j4
+        make package/luci-app-oaf/compile V=s -j4 || {
+          echo "错误：luci-app-oaf编译失败"
+          exit 1
+        }
         
+        # 编译oaf内核模块
         echo "编译oaf内核模块"
-        make package/oaf/compile V=s -j4
+        make package/oaf/compile V=s -j4 || {
+          echo "错误：oaf内核模块编译失败"
+          exit 1
+        }
         
+        # 编译open-app-filter服务
         echo "编译open-app-filter服务"
-        make package/open-app-filter/compile V=s -j4
+        make package/open-app-filter/compile V=s -j4 || {
+          echo "错误：open-app-filter服务编译失败"
+          exit 1
+        }
         
         # 验证编译结果
         OAF_IPKS=$(find bin/ -name "oaf*.ipk" -o -name "open-app-filter*.ipk")
         if [ -z "$OAF_IPKS" ]; then
-          echo "错误：OAF组件编译失败"
+          echo "错误：未找到OAF组件的IPK文件"
           exit 1
         fi
-        echo "找到的OAF IPK文件：$OAF_IPKS"
+        echo "找到的OAF IPK文件："
+        echo "$OAF_IPKS"
 
     - name: 🧱 构建iStoreOS-rootfs
       working-directory: ./imagebuilder
       run: |
         chmod +x build24.sh
-        bash ./build24.sh
+        bash ./build24.sh || {
+          echo "错误：rootfs构建失败"
+          exit 1
+        }
         
         # 验证rootfs生成
         ROOTFS=$(find bin/targets/armsr/armv8 -name "*generic-rootfs.tar.gz")
         if [ -z "$ROOTFS" ]; then
-          echo "错误：rootfs构建失败"
+          echo "错误：未找到生成的rootfs文件"
           exit 1
         fi
-        echo "生成的rootfs：$ROOTFS"
+        echo "生成的rootfs文件：$ROOTFS"
 
     - name: 📌 收集OAF组件
       run: |
@@ -211,6 +232,10 @@ jobs:
         find imagebuilder/bin/ -name "open-app-filter_*.ipk" -exec cp {} openappfilter_ipk/service/ \;
         find imagebuilder/bin/ -name "luci-app-oaf_*.ipk" -exec cp {} openappfilter_ipk/web/ \;
         find imagebuilder/bin/ -name "luci-i18n-oaf-zh-cn*.ipk" -exec cp {} openappfilter_ipk/language/ \;
+        
+        # 验证收集结果
+        echo "收集到的OAF组件："
+        tree openappfilter_ipk/
 
     - name: 🚀 上传到Release
       uses: softprops/action-gh-release@v2.2.1
