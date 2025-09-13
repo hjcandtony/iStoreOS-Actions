@@ -1,4 +1,4 @@
-name: 💿 1122St1_Build-Rootfs-release-oaf
+name: 💿 1126St1_Build-Rootfs-release-oaf
 on:
   workflow_dispatch:
     inputs:
@@ -34,60 +34,38 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    - name: ⚙️ 准备构建脚本（修复语法错误）
+    - name: ⚙️ 准备构建脚本
       run: |
-        # 确保arm64目录存在
         mkdir -p arm64
-        
-        # 如果build24.sh不存在，创建一个基础版本（修复here-document语法）
         if [ ! -f "arm64/build24.sh" ]; then
-          echo "警告：未找到arm64/build24.sh，创建基础版本"
-          # 使用正确的EOF格式（无缩进且单独成行）
+          echo "创建基础build24.sh"
           cat > arm64/build24.sh << EOF
           #!/bin/bash
-          # 基础构建脚本
           set -e
-          
-          # 初始包列表
           PACKAGES=""
-          
-          # 执行构建
           make image PACKAGES="\$PACKAGES"
         EOF
           chmod +x arm64/build24.sh
         fi
         
-        # 确保shell目录和脚本存在
         mkdir -p shell
         for script in "prepare-packages.sh" "custom-packages.sh"; do
           if [ ! -f "shell/$script" ]; then
-            echo "创建基础shell/$script"
-            # 修复here-document语法
             cat > "shell/$script" << EOF
             #!/bin/bash
-            # 自动生成的基础脚本
             exit 0
         EOF
             chmod +x "shell/$script"
           fi
         done
 
-    - name: ⚙️ 设置可执行权限
-      run: | 
-        chmod +x arm64/build24.sh
-        chmod +x shell/*.sh
-
     - name: ⚙️ 设置IP和网关
       run: |
         CONFIG_PATH="./files/etc/uci-defaults/99-custom.sh"
-        # 确保配置文件目录存在
         mkdir -p "$(dirname "$CONFIG_PATH")"
-        # 如果配置文件不存在，创建一个基础版本
         if [ ! -f "$CONFIG_PATH" ]; then
-          echo "创建基础网络配置文件 $CONFIG_PATH"
           cat > "$CONFIG_PATH" << EOF
           #!/bin/sh
-          # 自动生成的网络配置
           uci set network.lan.proto=dhcp
           uci commit network
         EOF
@@ -98,88 +76,70 @@ jobs:
            sed -i 's/proto=dhcp/proto=static/' "$CONFIG_PATH"
            sed -i "/lan/s/$/ipaddr=${{ inputs.ipaddr }}\n gateway=${{ inputs.gateway }}/" "$CONFIG_PATH"
         fi
-        cat "$CONFIG_PATH"
 
-    - name: ⏬ 安装完整依赖
+    - name: ⏬ 安装依赖
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          build-essential libncurses5-dev zstd curl unzip tree git \
-          libssl-dev python3-distutils libgmp3-dev libmpc-dev file rsync
+          build-essential libncurses5-dev zstd curl unzip git \
+          libssl-dev python3-distutils file rsync
 
-    - name: ⏬ 下载并配置iStoreOS ImageBuilder
+    - name: ⏬ 下载iStoreOS ImageBuilder
       run: |
-        # 下载ImageBuilder
         IMAGEBUILDER_URL="https://github.com/Kwonelee/iStoreOS-Actions/releases/download/iStoreOS-ImageBuilder-20250905/istoreos-imagebuilder-armsr-armv8.Linux-x86_64.tar.zst"
         curl -L -o imagebuilder.tar.zst "$IMAGEBUILDER_URL"
         
-        # 解压并处理目录结构
         mkdir -p imagebuilder
         tar --use-compress-program=unzstd -xvf imagebuilder.tar.zst -C imagebuilder --strip-components=1
         
         # 确保核心目录存在
         for dir in "package" "bin" "build_dir" "feeds" "target" "scripts"; do
-          if [ ! -d "imagebuilder/$dir" ]; then
-            echo "创建缺失的$dir目录"
-            mkdir -p "imagebuilder/$dir"
+          [ ! -d "imagebuilder/$dir" ] && mkdir -p "imagebuilder/$dir"
+        done
+        
+        [ ! -f "imagebuilder/Makefile" ] && { echo "ImageBuilder缺失Makefile"; exit 1; }
+
+    - name: ⏬ 获取OAF预编译IPK（关键修复）
+      run: |
+        # 创建OAF IPK存放目录
+        mkdir -p imagebuilder/packages/oaf
+        
+        # 下载适合armsr-armv8架构的OAF预编译包
+        OAF_ARCH="aarch64_cortex-a53"  # 适配iStoreOS armsr-armv8架构
+        OAF_VER="1.0.1"
+        
+        # 核心过滤模块
+        curl -L -o "imagebuilder/packages/oaf/oaf_${OAF_VER}_${OAF_ARCH}.ipk" "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/oaf_${OAF_VER}_${OAF_ARCH}.ipk"
+        
+        # 服务组件
+        curl -L -o "imagebuilder/packages/oaf/open-app-filter_${OAF_VER}_${OAF_ARCH}.ipk" "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/open-app-filter_${OAF_VER}_${OAF_ARCH}.ipk"
+        
+        # Web界面
+        curl -L -o "imagebuilder/packages/oaf/luci-app-oaf_${OAF_VER}_all.ipk" "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/luci-app-oaf_${OAF_VER}_all.ipk"
+        
+        # 中文语言包
+        curl -L -o "imagebuilder/packages/oaf/luci-i18n-oaf-zh-cn_${OAF_VER}_all.ipk" "https://github.com/destan19/OpenAppFilter/releases/download/v${OAF_VER}/luci-i18n-oaf-zh-cn_${OAF_VER}_all.ipk"
+        
+        # 验证下载结果
+        for ipk in $(ls imagebuilder/packages/oaf/*.ipk); do
+          if [ ! -s "$ipk" ]; then
+            echo "错误：OAF IPK文件 $ipk 下载失败"
+            exit 1
           fi
         done
         
-        # 验证ImageBuilder完整性
-        if [ ! -f "imagebuilder/Makefile" ]; then
-          echo "错误：ImageBuilder核心Makefile缺失"
-          exit 1
-        fi
+        # 复制到ImageBuilder的packages目录
+        cp imagebuilder/packages/oaf/*.ipk imagebuilder/packages/
 
-    - name: ⏬ 克隆并修复OpenAppFilter源码
+    - name: ⏬ 配置ImageBuilder
       run: |
-        # 克隆源码
-        git clone --depth 1 https://github.com/destan19/OpenAppFilter.git temp_oaf
-        
-        # 定义必要组件
-        OAF_COMPONENTS=("luci-app-oaf" "oaf" "open-app-filter")
-        OAF_PACKAGE_DIR="imagebuilder/package"
-        
-        # 复制并修复每个组件
-        for comp in "${OAF_COMPONENTS[@]}"; do
-          SRC_DIR="temp_oaf/$comp"
-          if [ ! -d "$SRC_DIR" ]; then
-            echo "错误：OAF源组件 $comp 缺失"
-            exit 1
-          fi
-          
-          DST_DIR="$OAF_PACKAGE_DIR/$comp"
-          rsync -av "$SRC_DIR/" "$DST_DIR/"
-          
-          if [ ! -f "$DST_DIR/Makefile" ]; then
-            echo "错误：组件 $comp 缺失Makefile"
-            exit 1
-          fi
-          
-          # 修复Makefile路径
-          sed -i "s|\$(TOPDIR)/package/OpenAppFilter/|../|g" "$DST_DIR/Makefile"
-          sed -i "s|\$(TOPDIR)/package/|../|g" "$DST_DIR/Makefile"
-        done
-        
-        rm -rf temp_oaf
-        
-        # 创建软链接
-        cd imagebuilder
-        [ ! -L "packages" ] && ln -s package packages
-
-    - name: ⏬ 复制必备文件并配置ImageBuilder
-      run: |
-        # 确保build24.sh被正确复制
-        mkdir -p imagebuilder
+        # 复制构建脚本
         cp arm64/build24.sh imagebuilder/
-        cp arm64/Makefile imagebuilder/ 2>/dev/null || true
         cp shell/prepare-packages.sh imagebuilder/
         cp shell/custom-packages.sh imagebuilder/
         
-        # 验证build24.sh是否存在（关键检查）
+        # 确保build24.sh存在
         if [ ! -f "imagebuilder/build24.sh" ]; then
-          echo "错误：复制build24.sh到imagebuilder失败"
-          # 再次尝试创建
           cat > imagebuilder/build24.sh << EOF
           #!/bin/bash
           set -e
@@ -187,99 +147,64 @@ jobs:
           make image PACKAGES="\$PACKAGES"
         EOF
           chmod +x imagebuilder/build24.sh
-          echo "已创建备用build24.sh"
         fi
         
         # 配置系统文件
         mkdir -p imagebuilder/files/etc/{uci-defaults,opkg}
         cp files/etc/uci-defaults/99-custom.sh imagebuilder/files/etc/uci-defaults/
-        cp files/etc/opkg/distfeeds.conf imagebuilder/files/etc/opkg/ 2>/dev/null || true
+        [ -f "files/etc/opkg/distfeeds.conf" ] && cp files/etc/opkg/distfeeds.conf imagebuilder/files/etc/opkg/
         
-        # 配置编译选项
+        # 配置输出格式
         cd imagebuilder
-        echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
-        echo "CONFIG_PACKAGE_oaf=y" >> .config
-        echo "CONFIG_PACKAGE_open-app-filter=y" >> .config
-        echo "CONFIG_PACKAGE_luci-i18n-oaf-zh-cn=y" >> .config
         echo "CONFIG_TARGET_ROOTFS_TARGZ=y" >> .config
-        
-        if [ "${{ inputs.include_docker }}" = "yes" ]; then
-          echo "CONFIG_PACKAGE_docker=y" >> .config
-          echo "CONFIG_PACKAGE_docker-compose=y" >> .config
-        fi
+        echo "# CONFIG_TARGET_ROOTFS_SQUASHFS is not set" >> .config
 
-    - name: 🛠️ 修改build24.sh集成OAF（带前置检查）
+    - name: 🛠️ 配置build24.sh集成OAF
       run: |
-        # 再次确认文件存在
-        if [ ! -f "imagebuilder/build24.sh" ]; then
-          echo "错误：imagebuilder/build24.sh仍然不存在"
-          exit 1
-        fi
-        
         # 清理旧配置
         sed -i '/oaf/d' imagebuilder/build24.sh
         sed -i '/open-app-filter/d' imagebuilder/build24.sh
         sed -i '/docker/d' imagebuilder/build24.sh
         
-        # 添加OAF组件
-        echo 'PACKAGES="$PACKAGES luci-app-oaf"' >> imagebuilder/build24.sh
+        # 添加OAF组件（直接引用IPK包名）
         echo 'PACKAGES="$PACKAGES oaf"' >> imagebuilder/build24.sh
         echo 'PACKAGES="$PACKAGES open-app-filter"' >> imagebuilder/build24.sh
+        echo 'PACKAGES="$PACKAGES luci-app-oaf"' >> imagebuilder/build24.sh
         echo 'PACKAGES="$PACKAGES luci-i18n-oaf-zh-cn"' >> imagebuilder/build24.sh
         
         # 添加Docker
         if [ "${{ inputs.include_docker }}" = "yes" ]; then
           echo 'PACKAGES="$PACKAGES docker docker-compose"' >> imagebuilder/build24.sh
         fi
-        
-        # 显示最终的PACKAGES配置
-        echo "build24.sh中的包配置："
-        grep "PACKAGES=" imagebuilder/build24.sh
 
-    - name: 🧱 编译OAF组件
+    - name: 🧱 构建iStoreOS-rootfs（含OAF）
       working-directory: ./imagebuilder
       run: |
-        # 更新包信息
-        [ -d "scripts/feeds" ] && ./scripts/feeds update -a
+        # 更新包列表
+        ./scripts/feeds update -a 2>/dev/null || true
+        ./scripts/feeds install -a 2>/dev/null || true
         
-        # 编译组件
-        make package/luci-app-oaf/compile V=s || {
-          echo "错误：luci-app-oaf编译失败"
-          exit 1
-        }
-        make package/oaf/compile V=s || {
-          echo "错误：oaf编译失败"
-          exit 1
-        }
-        make package/open-app-filter/compile V=s || {
-          echo "错误：open-app-filter编译失败"
-          exit 1
-        }
-
-    - name: 🧱 构建iStoreOS-rootfs
-      working-directory: ./imagebuilder
-      run: |
+        # 执行构建
         chmod +x build24.sh
         bash ./build24.sh || {
-          echo "错误：rootfs构建失败"
+          echo "构建失败，查看详细日志"
+          cat build_dir/target-aarch64_generic_musl/build.log 2>/dev/null
           exit 1
         }
         
-        # 验证rootfs
+        # 验证结果
         ROOTFS=$(find bin/targets/armsr/armv8 -name "*generic-rootfs.tar.gz")
         if [ -z "$ROOTFS" ]; then
-          echo "错误：未找到rootfs文件"
+          echo "未找到生成的rootfs文件"
           exit 1
         fi
-        echo "生成的rootfs：$ROOTFS"
+        echo "生成的rootfs: $ROOTFS"
 
-    - name: 📌 收集OAF组件
+    - name: 📌 收集输出文件
       run: |
-        mkdir -p openappfilter_ipk/{core,service,web,language}
-        find imagebuilder/bin/ -name "oaf_*.ipk" -exec cp {} openappfilter_ipk/core/ \;
-        find imagebuilder/bin/ -name "open-app-filter_*.ipk" -exec cp {} openappfilter_ipk/service/ \;
-        find imagebuilder/bin/ -name "luci-app-oaf_*.ipk" -exec cp {} openappfilter_ipk/web/ \;
-        find imagebuilder/bin/ -name "luci-i18n-oaf-zh-cn*.ipk" -exec cp {} openappfilter_ipk/language/ \;
+        mkdir -p release
+        cp imagebuilder/bin/targets/armsr/armv8/*generic-rootfs.tar.gz release/
+        cp imagebuilder/packages/oaf/*.ipk release/
 
     - name: 🚀 上传到Release
       uses: softprops/action-gh-release@v2.2.1
@@ -289,11 +214,9 @@ jobs:
           ## iStoreOS-24.10 含OAF防沉迷插件
           - 网络模式：${{ inputs.network_settings }}
           - 管理IP：${{ inputs.network_settings == 'static' && inputs.ipaddr || '192.168.100.1' }}
+          - 已集成OAF预编译组件
         files: |
-          imagebuilder/bin/targets/armsr/armv8/*generic-rootfs.tar.gz
-          openappfilter_ipk/core/*.ipk
-          openappfilter_ipk/service/*.ipk
-          openappfilter_ipk/web/*.ipk
-          openappfilter_ipk/language/*.ipk
+          release/*.tar.gz
+          release/*.ipk
       env:
         GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
